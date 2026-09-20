@@ -1,10 +1,13 @@
 const Duty = require("../../models/Duty");
+const {
+  resolveAssignments,
+  nextStartingIndex,
+} = require("../../utils/dutyAssignment");
 
 module.exports = (agenda) => {
   agenda.define("increment duty currentIndex", async () => {
     try {
-      const dutyDocs = await Duty.find().populate("memberOrder");
-      console.log(dutyDocs);
+      const dutyDocs = await Duty.find();
 
       const updatePromises = dutyDocs.map(async (duty) => {
         const members = duty.memberOrder || [];
@@ -12,18 +15,18 @@ module.exports = (agenda) => {
 
         if (members.length === 0 || docs.length === 0) return;
 
-        // Step 1: Calculate next starting index
-        const maxIndex = members.length - 1;
-        const nextIndex =
-          duty.currentStartingMemberIndex >= maxIndex
-            ? 0
-            : duty.currentStartingMemberIndex + 1;
+        // Step 1: Advance the rotation by one member
+        const nextIndex = nextStartingIndex(
+          duty.currentStartingMemberIndex,
+          members.length
+        );
 
-        // Step 2: Rotate assignments
-        const startIdx = nextIndex % members.length;
+        // Step 2: Re-assign duties for the new cycle. Skips only apply to the
+        // cycle they were requested in, so they are cleared here.
+        const assignments = resolveAssignments(docs, members, nextIndex, []);
         const updatedDocs = docs.map((doc, i) => ({
-          ...doc._doc, // spread original doc fields
-          assignedTo: members[(startIdx + i) % members.length],
+          ...doc.toObject(),
+          assignedTo: assignments[i],
         }));
 
         // Step 3: Save updates
@@ -33,12 +36,16 @@ module.exports = (agenda) => {
             $set: {
               currentStartingMemberIndex: nextIndex,
               duties: updatedDocs,
+              skippedMembersForCurrentCycle: [],
             },
           }
         );
       });
 
-      const results = await Promise.all(updatePromises);
+      await Promise.all(updatePromises);
+      console.log(
+        `[Agenda] Rotated duties for ${dutyDocs.length} room(s) and cleared skips.`
+      );
     } catch (error) {
       console.error("[Agenda] Error updating assignedTo fields:", error);
     }

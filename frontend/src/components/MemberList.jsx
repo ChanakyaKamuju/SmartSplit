@@ -6,7 +6,7 @@ import expenseService from "../services/expenseService"; // Import expenseServic
 import { useNavigate } from "react-router-dom"; // For navigation after leaving room
 
 function MemberList() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const {
     currentRoom,
     roomService,
@@ -67,7 +67,7 @@ function MemberList() {
     }
     setLoading(true);
     try {
-      const response = await roomService.addMemberToRoom(
+      await roomService.addMemberToRoom(
         currentRoom._id,
         newMemberEmail,
         newMemberRole,

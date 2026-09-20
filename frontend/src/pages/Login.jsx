@@ -243,7 +243,7 @@ function Login() {
               }`}
             >
               <i
-                class={`fa-solid fa-angle-down text-2xl ${
+                className={`fa-solid fa-angle-down text-2xl ${
                   showFields ? "" : "animate-bounce"
                 }`}
               ></i>

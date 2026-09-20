@@ -11,7 +11,7 @@ const { protect, adminProtect } = require("../middleware/authMiddleware"); // Im
 // Admin-only routes for configuring and managing duties
 // The `adminProtect` middleware ensures the user is an admin of the room specified by `:roomId`.
 router.post("/:id/configure", protect, adminProtect, createOrUpdateDuties);
-// router.put("/:id/skip-member", protect, adminProtect, skipMemberFromCycle);
+router.put("/:id/skip-member", protect, adminProtect, skipMemberFromCycle);
 
 // Accessible by any room member to view duties
 router.get("/:id", protect, getDutiesTable);

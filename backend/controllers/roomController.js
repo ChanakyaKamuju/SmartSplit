@@ -3,6 +3,48 @@ const asyncHandler = require("express-async-handler");
 const Room = require("../models/Room");
 const User = require("../models/User");
 const Expense = require("../models/Expense"); // Expense model is correctly imported and used
+const Duty = require("../models/Duty");
+const { resolveAssignments } = require("../utils/dutyAssignment");
+
+// Keep the duty rotation in sync when someone stops being a room member.
+// Without this a departed member stays in memberOrder and keeps being assigned
+// duties by the nightly rotation job.
+const dropMemberFromDuties = async (roomId, userId) => {
+  const dutyConfig = await Duty.findOne({ roomId });
+  if (!dutyConfig) return;
+
+  const target = userId.toString();
+  const sizeBefore = dutyConfig.memberOrder.length;
+
+  dutyConfig.memberOrder = dutyConfig.memberOrder.filter(
+    (id) => id.toString() !== target,
+  );
+  dutyConfig.skippedMembersForCurrentCycle =
+    dutyConfig.skippedMembersForCurrentCycle.filter(
+      (id) => id.toString() !== target,
+    );
+
+  if (dutyConfig.memberOrder.length === sizeBefore) return; // not in the rotation
+
+  if (dutyConfig.currentStartingMemberIndex >= dutyConfig.memberOrder.length) {
+    dutyConfig.currentStartingMemberIndex = 0;
+  }
+
+  // Duties are kept even if they now outnumber the remaining members; the
+  // rotation wraps so someone takes more than one, and nothing is silently
+  // discarded. With no members left every duty becomes unassigned.
+  const assignments = resolveAssignments(
+    dutyConfig.duties,
+    dutyConfig.memberOrder,
+    dutyConfig.currentStartingMemberIndex,
+    dutyConfig.skippedMembersForCurrentCycle,
+  );
+  dutyConfig.duties.forEach((duty, index) => {
+    duty.assignedTo = assignments[index];
+  });
+
+  await dutyConfig.save();
+};
 
 // Removed: const TreasureTransaction = require('../models/TreasureTransaction'); // This line is removed
 
@@ -161,9 +203,10 @@ const addMemberToRoom = asyncHandler(async (req, res) => {
     throw new Error("User with that email not found.");
   }
 
-  // Check if the user is already a member of the room
+  // Check if the user is already a member of the room. members.user is
+  // populated here, so compare _id and not the document itself.
   const isAlreadyMember = room.members.some(
-    (member) => member.user.toString() === userToAdd._id.toString(),
+    (member) => member.user._id.toString() === userToAdd._id.toString(),
   );
   if (isAlreadyMember) {
     res.status(400);
@@ -229,51 +272,55 @@ const removeMemberFromRoom = asyncHandler(async (req, res) => {
     }
   }
 
-  // Check for outstanding balances before removal
+  // Check for outstanding balances before removal. Only the lookup is wrapped
+  // in try/catch; the 400 below must not be swallowed and relabelled.
+  let rawBalances;
   try {
     // Pass the Expense model directly to the internal function
-    const { rawBalances } = await getRoomBalancesInternal(
+    ({ rawBalances } = await getRoomBalancesInternal(
       roomId,
       req.user._id,
       Expense,
-    );
-    const memberBalance = rawBalances.find((b) => b._id === userId);
-
-    console.log(
-      `[removeMemberFromRoom] Balance for ${
-        memberToRemove.user.name
-      } (${userId}): ${memberBalance ? memberBalance.amount : "N/A"}`,
-    );
-
-    if (memberBalance && Math.abs(memberBalance.amount) > 0.01) {
-      // Check if balance is not zero (allowing for float inaccuracies)
-      console.warn(
-        `[removeMemberFromRoom] User ${userId} has outstanding balance: ${memberBalance.amount}`,
-      );
-      res.status(400);
-      throw new Error(
-        `${memberToRemove.user.name} has outstanding debts or credits and cannot be removed. Please settle all expenses first.`,
-      );
-    }
-    console.log(
-      `[removeMemberFromRoom] User ${userId} has no outstanding balances.`,
-    );
+    ));
   } catch (balanceError) {
     console.error(
       `[removeMemberFromRoom] Error during balance check for user ${userId}:`,
       balanceError.message,
     );
-    // Re-throw the error to ensure it's caught by asyncHandler and handled by the error middleware.
+    res.status(500);
     throw new Error(
       `Failed to check outstanding balances: ${balanceError.message}`,
     );
   }
+
+  const memberBalance = rawBalances.find((b) => b._id === userId);
+
+  console.log(
+    `[removeMemberFromRoom] Balance for ${
+      memberToRemove.user.name
+    } (${userId}): ${memberBalance ? memberBalance.amount : "N/A"}`,
+  );
+
+  if (memberBalance && Math.abs(memberBalance.amount) > 0.01) {
+    // Check if balance is not zero (allowing for float inaccuracies)
+    console.warn(
+      `[removeMemberFromRoom] User ${userId} has outstanding balance: ${memberBalance.amount}`,
+    );
+    res.status(400);
+    throw new Error(
+      `${memberToRemove.user.name} has outstanding debts or credits and cannot be removed. Please settle all expenses first.`,
+    );
+  }
+  console.log(
+    `[removeMemberFromRoom] User ${userId} has no outstanding balances.`,
+  );
 
   // Remove the member
   room.members = room.members.filter(
     (member) => member.user._id.toString() !== userId,
   );
   await room.save();
+  await dropMemberFromDuties(roomId, userId);
   console.log(
     `[removeMemberFromRoom] User ${userId} removed from room members array.`,
   );
@@ -409,50 +456,54 @@ const leaveRoom = asyncHandler(async (req, res) => {
   console.log(
     `[leaveRoom] Checking balances for user leaving: ${req.user._id}...`,
   );
+  // Only the lookup is wrapped in try/catch; the 400 below must not be
+  // swallowed and relabelled.
+  let rawBalances;
   try {
     // Pass the Expense model directly to the internal function
-    const { rawBalances } = await getRoomBalancesInternal(
+    ({ rawBalances } = await getRoomBalancesInternal(
       roomId,
       req.user._id,
       Expense,
-    );
-    const userBalance = rawBalances.find(
-      (b) => b._id === req.user._id.toString(),
-    );
-
-    console.log(
-      `[leaveRoom] Balance for user leaving (${
-        req.user.name || req.user._id
-      }): ${userBalance ? userBalance.amount : "N/A"}`,
-    );
-
-    if (userBalance && Math.abs(userBalance.amount) > 0.01) {
-      console.warn(
-        `[leaveRoom] User ${req.user._id} has outstanding balance: ${userBalance.amount}`,
-      );
-      res.status(400);
-      throw new Error(
-        "You have outstanding debts or credits and cannot leave the room. Please settle all expenses first.",
-      );
-    }
-    console.log(
-      `[leaveRoom] User ${req.user._id} has no outstanding balances.`,
-    );
+    ));
   } catch (balanceError) {
     console.error(
       `[leaveRoom] Error during balance check for user ${req.user._id}:`,
       balanceError.message,
     );
+    res.status(500);
     throw new Error(
       `Failed to check outstanding balances: ${balanceError.message}`,
     );
   }
+
+  const userBalance = rawBalances.find(
+    (b) => b._id === req.user._id.toString(),
+  );
+
+  console.log(
+    `[leaveRoom] Balance for user leaving (${req.user.name || req.user._id}): ${
+      userBalance ? userBalance.amount : "N/A"
+    }`,
+  );
+
+  if (userBalance && Math.abs(userBalance.amount) > 0.01) {
+    console.warn(
+      `[leaveRoom] User ${req.user._id} has outstanding balance: ${userBalance.amount}`,
+    );
+    res.status(400);
+    throw new Error(
+      "You have outstanding debts or credits and cannot leave the room. Please settle all expenses first.",
+    );
+  }
+  console.log(`[leaveRoom] User ${req.user._id} has no outstanding balances.`);
 
   // Remove the user from the members array
   room.members = room.members.filter(
     (member) => member.user._id.toString() !== req.user._id.toString(),
   );
   await room.save();
+  await dropMemberFromDuties(roomId, req.user._id);
   console.log(
     `[leaveRoom] User ${req.user._id} removed from room members array.`,
   );
@@ -531,16 +582,24 @@ const deleteRoom = asyncHandler(async (req, res) => {
     `[deleteRoom] No outstanding treasure transactions (check skipped as model not present).`,
   );
 
-  // If all checks pass, delete the room
+  // If all checks pass, delete the room and its duty configuration (which
+  // would otherwise be orphaned and keep getting rotated nightly)
+  await Duty.deleteOne({ roomId });
   await room.deleteOne(); // Use deleteOne() for Mongoose 6+
   console.log(`[deleteRoom] Room ${roomId} deleted successfully.`);
 
   res.status(200).json({ message: "Room deleted successfully." });
 });
 
-// Internal helper function to get room balances without sending a response
-const getRoomBalancesInternal = asyncHandler(
-  async (roomId, requestingUserId, ExpenseModel) => {
+// Internal helper function to get room balances without sending a response.
+// Deliberately NOT wrapped in asyncHandler: that wrapper expects
+// (req, res, next) and would treat the third argument as `next`, swallowing
+// any error instead of propagating it to the caller.
+const getRoomBalancesInternal = async (
+  roomId,
+  requestingUserId,
+  ExpenseModel
+) => {
     // Debug log for ExpenseModel
     const room = await Room.findById(roomId).populate("members.user", "name");
     if (!room) {
@@ -608,15 +667,14 @@ const getRoomBalancesInternal = asyncHandler(
 
     const balanceArray = Object.values(balances);
 
-    return {
-      rawBalances: balanceArray.map((b) => ({
-        _id: b._id,
-        name: b.name,
-        amount: parseFloat(b.amount.toFixed(2)),
-      })),
-    };
-  },
-);
+  return {
+    rawBalances: balanceArray.map((b) => ({
+      _id: b._id,
+      name: b.name,
+      amount: parseFloat(b.amount.toFixed(2)),
+    })),
+  };
+};
 
 module.exports = {
   createRoom,

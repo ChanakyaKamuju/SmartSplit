@@ -7,6 +7,7 @@ const roomRoutes = require("./routes/roomRoutes");
 const expenseRoutes = require("./routes/expenseRoutes");
 const treasureRoutes = require("./routes/treasureRoutes");
 const dutyRoutes = require("./routes/dutyRoutes");
+const { notFound, errorHandler } = require("./middleware/errorMiddleware");
 const Agenda = require("./agenda"); // Import Agenda for job scheduling
 
 dotenv.config();
@@ -29,6 +30,10 @@ app.use("/api/rooms", roomRoutes);
 app.use("/api/expenses", expenseRoutes);
 app.use("/api/treasure", treasureRoutes);
 app.use("/api/duties", dutyRoutes);
+
+// Error handling must be registered after all routes
+app.use(notFound);
+app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
 

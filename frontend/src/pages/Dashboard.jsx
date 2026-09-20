@@ -13,7 +13,6 @@ function Dashboard() {
     error: roomError,
     addRoomToMyRooms,
     selectRoom,
-    clearCurrentRoom,
     roomService, // Access roomService for create/join
   } = useRoom();
 

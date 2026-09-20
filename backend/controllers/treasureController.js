@@ -28,6 +28,7 @@ const addTreasureAmount = asyncHandler(async (req, res) => {
     description: description,
     amount: amount,
     type: "credit", // Type 'credit' for adding money
+    performedBy: req.user._id,
     date: new Date(),
   });
 
@@ -51,9 +52,9 @@ const recordTreasureTransaction = asyncHandler(async (req, res) => {
 
   if (typeof amount !== "number" || amount <= 0) {
     res.status(400);
-    throw new new Error(
+    throw new Error(
       "Please provide a valid positive amount for the transaction."
-    )();
+    );
   }
   if (!description) {
     res.status(400);
@@ -76,6 +77,7 @@ const recordTreasureTransaction = asyncHandler(async (req, res) => {
     description: description,
     amount: amount,
     type: "debit", // Type 'debit' for spending money
+    performedBy: req.user._id,
     date: new Date(),
   });
 
@@ -126,7 +128,10 @@ const getTreasureTransactions = asyncHandler(async (req, res) => {
   const roomId = req.params.roomId;
 
   // Find the room by its MongoDB _id
-  const room = await Room.findById(roomId);
+  const room = await Room.findById(roomId).populate(
+    "treasureTransactions.performedBy",
+    "name email"
+  );
 
   if (!room) {
     res.status(404);
@@ -145,8 +150,9 @@ const getTreasureTransactions = asyncHandler(async (req, res) => {
     );
   }
 
-  // Sort transactions by date descending (most recent first)
-  const sortedTransactions = room.treasureTransactions.sort(
+  // Sort transactions by date descending (most recent first) without mutating
+  // the stored array order
+  const sortedTransactions = [...room.treasureTransactions].sort(
     (a, b) => b.date - a.date
   );
 
@@ -156,9 +162,72 @@ const getTreasureTransactions = asyncHandler(async (req, res) => {
   });
 });
 
+// @desc    Delete a treasure transaction and revert its effect on the balance
+// @route   DELETE /api/treasure/transaction/:transactionId
+// @access  Private (room admin or the member who recorded it)
+const deleteTreasureTransaction = asyncHandler(async (req, res) => {
+  const { transactionId } = req.params;
+
+  // Transactions are embedded in the room document, so locate the owning room
+  const room = await Room.findOne({
+    "treasureTransactions._id": transactionId,
+  });
+
+  if (!room) {
+    res.status(404);
+    throw new Error("Treasure transaction not found.");
+  }
+
+  const transaction = room.treasureTransactions.id(transactionId);
+  if (!transaction) {
+    res.status(404);
+    throw new Error("Treasure transaction not found.");
+  }
+
+  const isRoomAdmin = room.members.some(
+    (member) =>
+      member.user.toString() === req.user._id.toString() &&
+      member.role === "admin"
+  );
+  const isPerformer =
+    transaction.performedBy &&
+    transaction.performedBy.toString() === req.user._id.toString();
+
+  if (!isRoomAdmin && !isPerformer) {
+    res.status(403);
+    throw new Error(
+      "Not authorized to delete this transaction. Only a room admin or the member who recorded it can delete."
+    );
+  }
+
+  // Reverting a credit removes money from the fund, so make sure that is possible
+  if (transaction.type === "credit" && room.treasure < transaction.amount) {
+    res.status(400);
+    throw new Error(
+      "Cannot delete this deposit: the treasure has already been spent below the deposited amount."
+    );
+  }
+
+  // Revert the transaction's effect on the running total
+  if (transaction.type === "credit") {
+    room.treasure -= transaction.amount;
+  } else {
+    room.treasure += transaction.amount;
+  }
+
+  transaction.deleteOne();
+  await room.save();
+
+  res.status(200).json({
+    message: "Treasure transaction deleted successfully.",
+    currentTreasure: room.treasure,
+  });
+});
+
 module.exports = {
   addTreasureAmount,
   recordTreasureTransaction,
   getCurrentTreasure,
   getTreasureTransactions,
+  deleteTreasureTransaction,
 };

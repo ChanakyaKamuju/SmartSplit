@@ -599,7 +599,7 @@
 
 // export default ExpenseSplitter;
 // frontend/src/components/ExpenseSplitter.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import expenseService from "../services/expenseService";
 import { useAuth } from "../contexts/AuthContext";
 import { useRoom } from "../hooks/useRoomData";
@@ -631,7 +631,7 @@ function ExpenseSplitter() {
   );
 
   // Function to re-fetch all data (expenses, balances, simplified debts)
-  const refreshData = async () => {
+  const refreshData = useCallback(async () => {
     if (!currentRoom || !user || !user.token) return;
     setLoading(true);
     setError(null);
@@ -648,30 +648,41 @@ function ExpenseSplitter() {
       );
       setBalances(fetchedBalances.rawBalances);
       setSimplifiedDebts(fetchedBalances.simplifiedDebts);
-
-      // Initialize splitMembers with all room members for new expense form if not already set
-      if (splitMembers.length === 0) {
-        const initialSplitMembers = currentRoom.members.map((member) => ({
-          _id: member.user._id,
-          name: member.user.name,
-          email: member.user.email,
-          selected: true, // Default to all selected for equal split
-        }));
-        setSplitMembers(initialSplitMembers);
-        setPaidBy(user._id); // Ensure paidBy is current user by default
-      }
     } catch (err) {
       console.error("Failed to refresh expenses or balances:", err);
       setError(err.message || "Failed to refresh expenses and balances.");
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentRoom, user]);
 
   // Fetch data on component mount or when currentRoom changes
   useEffect(() => {
     refreshData();
-  }, [currentRoom, user]); // Depend on currentRoom and user
+  }, [refreshData]); // Depend on currentRoom and user
+
+  // Keep the split checkboxes in sync with room membership. Seeding this only
+  // once meant a member added later could never be checked into a split,
+  // because handleMemberSelection only maps over the existing entries.
+  useEffect(() => {
+    if (!currentRoom) return;
+    setSplitMembers((prev) =>
+      currentRoom.members.map((member) => {
+        const existing = prev.find((m) => m._id === member.user._id);
+        return {
+          _id: member.user._id,
+          name: member.user.name,
+          email: member.user.email,
+          selected: existing ? existing.selected : true,
+        };
+      })
+    );
+  }, [currentRoom]);
+
+  // Default the payer to the current user
+  useEffect(() => {
+    if (user?._id) setPaidBy((prev) => prev || user._id);
+  }, [user]);
 
   // Clear messages after a few seconds
   useEffect(() => {
@@ -755,78 +766,82 @@ function ExpenseSplitter() {
     }
 
     let splitsData = [];
-    let validationError = false;
 
     switch (splitType) {
-      case "equal":
+      case "equal": {
         splitsData = selectedMembersForSplit.map((member) => ({
           user: member._id,
         }));
         break;
-      case "unequal":
-        let sumCustomAmounts = 0;
-        splitsData = selectedMembersForSplit.map((member) => {
-          const amount = customAmounts[member._id];
-          if (typeof amount !== "number" || amount <= 0) {
-            validationError = true;
-            setError(
-              `Please enter a valid positive amount for ${member.name}.`
-            );
-            return;
-          }
-          sumCustomAmounts += amount;
-          return { user: member._id, amount: amount };
-        });
-        if (validationError) return;
+      }
+      case "unequal": {
+        const invalid = selectedMembersForSplit.find(
+          (member) =>
+            typeof customAmounts[member._id] !== "number" ||
+            customAmounts[member._id] <= 0
+        );
+        if (invalid) {
+          setError(`Please enter a valid positive amount for ${invalid.name}.`);
+          return;
+        }
+        splitsData = selectedMembersForSplit.map((member) => ({
+          user: member._id,
+          amount: customAmounts[member._id],
+        }));
+        const sumCustomAmounts = splitsData.reduce(
+          (sum, s) => sum + s.amount,
+          0
+        );
         if (Math.abs(sumCustomAmounts - parseFloat(totalAmount)) > 0.01) {
           setError("Sum of unequal amounts does not match the total amount.");
           return;
         }
         break;
-      case "percentage":
-        let sumPercentages = 0;
-        splitsData = selectedMembersForSplit.map((member) => {
-          const percentage = percentages[member._id];
-          if (
-            typeof percentage !== "number" ||
-            percentage < 0 ||
-            percentage > 100
-          ) {
-            validationError = true;
-            setError(
-              `Please enter a valid percentage (0-100) for ${member.name}.`
-            );
-            return;
-          }
-          sumPercentages += percentage;
-          return { user: member._id, percentage: percentage };
-        });
-        if (validationError) return;
+      }
+      case "percentage": {
+        const invalid = selectedMembersForSplit.find(
+          (member) =>
+            typeof percentages[member._id] !== "number" ||
+            percentages[member._id] < 0 ||
+            percentages[member._id] > 100
+        );
+        if (invalid) {
+          setError(
+            `Please enter a valid percentage (0-100) for ${invalid.name}.`
+          );
+          return;
+        }
+        splitsData = selectedMembersForSplit.map((member) => ({
+          user: member._id,
+          percentage: percentages[member._id],
+        }));
+        const sumPercentages = splitsData.reduce(
+          (sum, s) => sum + s.percentage,
+          0
+        );
         if (Math.abs(sumPercentages - 100) > 0.01) {
           setError("Sum of percentages must be 100%.");
           return;
         }
         break;
-      case "shares":
-        let sumShares = 0;
-        splitsData = selectedMembersForSplit.map((member) => {
-          const sharesVal = shares[member._id];
-          if (typeof sharesVal !== "number" || sharesVal <= 0) {
-            validationError = true;
-            setError(
-              `Please enter a valid positive number of shares for ${member.name}.`
-            );
-            return;
-          }
-          sumShares += sharesVal;
-          return { user: member._id, shares: sharesVal };
-        });
-        if (validationError) return;
-        if (sumShares === 0) {
-          setError("Total shares cannot be zero.");
+      }
+      case "shares": {
+        const invalid = selectedMembersForSplit.find(
+          (member) =>
+            typeof shares[member._id] !== "number" || shares[member._id] <= 0
+        );
+        if (invalid) {
+          setError(
+            `Please enter a valid positive number of shares for ${invalid.name}.`
+          );
           return;
         }
+        splitsData = selectedMembersForSplit.map((member) => ({
+          user: member._id,
+          shares: shares[member._id],
+        }));
         break;
+      }
       default:
         setError("Invalid split type selected.");
         return;
@@ -917,14 +932,6 @@ function ExpenseSplitter() {
   if (loading) {
     return (
       <div className="text-center py-4 text-gray-600">Loading expenses...</div>
-    );
-  }
-
-  if (error && !message) {
-    return (
-      <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative my-4">
-        {error}
-      </div>
     );
   }
 
@@ -1248,7 +1255,7 @@ function ExpenseSplitter() {
           <ul className="space-y-2">
             {simplifiedDebts.map((debt, index) => (
               <li
-                key={index}
+                key={`${debt.fromId}-${debt.toId}-${index}`}
                 className="bg-yellow-50 p-3 rounded-md border border-yellow-300 flex justify-between items-center"
               >
                 <span className="font-medium text-gray-800">
@@ -1257,17 +1264,12 @@ function ExpenseSplitter() {
                     ${debt.amount.toFixed(2)}
                   </span>
                 </span>
-                {(debt.from === user.name || debt.to === user.name) && ( // Only show settle button if current user is involved
+                {/* Only show settle button if current user is involved.
+                    Matched on id, not name: names are not unique. */}
+                {(debt.fromId === user._id || debt.toId === user._id) && (
                   <button
                     onClick={() =>
-                      handleSettleDebt(
-                        currentRoom.members.find(
-                          (m) => m.user.name === debt.from
-                        )?.user._id,
-                        currentRoom.members.find((m) => m.user.name === debt.to)
-                          ?.user._id,
-                        debt.amount
-                      )
+                      handleSettleDebt(debt.fromId, debt.toId, debt.amount)
                     }
                     className="ml-4 bg-blue-600 hover:bg-blue-700 text-white text-sm py-1 px-3 rounded-md transition duration-200 ease-in-out"
                   >

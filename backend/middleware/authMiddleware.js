@@ -4,34 +4,41 @@ const Room = require("../models/Room"); // Import the Room model
 
 // Middleware to protect routes
 const protect = async (req, res, next) => {
-  let token;
-
   // Check if authorization header exists and starts with 'Bearer'
   if (
-    req.headers.authorization &&
-    req.headers.authorization.startsWith("Bearer")
+    !req.headers.authorization ||
+    !req.headers.authorization.startsWith("Bearer")
   ) {
-    try {
-      // Get token from header (format: "Bearer TOKEN")
-      token = req.headers.authorization.split(" ")[1];
-
-      // Verify token using the JWT_SECRET from environment variables
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-      // Find the user by ID from the decoded token and attach to request object
-      // .select('-password') excludes the password field from the returned user object
-      req.user = await User.findById(decoded.id).select("-password");
-
-      next(); // Move to the next middleware or route handler
-    } catch (error) {
-      console.error(error);
-      res.status(401).json({ message: "Not authorized, token failed" });
-    }
+    return res.status(401).json({ message: "Not authorized, no token" });
   }
 
-  // If no token is found
+  // Get token from header (format: "Bearer TOKEN")
+  const token = req.headers.authorization.split(" ")[1];
   if (!token) {
-    res.status(401).json({ message: "Not authorized, no token" });
+    return res.status(401).json({ message: "Not authorized, no token" });
+  }
+
+  try {
+    // Verify token using the JWT_SECRET from environment variables
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Find the user by ID from the decoded token and attach to request object
+    // .select('-password') excludes the password field from the returned user object
+    const user = await User.findById(decoded.id).select("-password");
+
+    // A token can outlive its user; without this every controller would then
+    // crash on req.user._id
+    if (!user) {
+      return res
+        .status(401)
+        .json({ message: "Not authorized, user no longer exists" });
+    }
+
+    req.user = user;
+    return next(); // Move to the next middleware or route handler
+  } catch (error) {
+    console.error(error);
+    return res.status(401).json({ message: "Not authorized, token failed" });
   }
 };
 

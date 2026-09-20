@@ -1,5 +1,5 @@
 // frontend/src/components/TreasureManager.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import treasureService from "../services/treasureService";
 import { useAuth } from "../contexts/AuthContext";
 import { useRoom } from "../hooks/useRoomData";
@@ -20,7 +20,7 @@ function TreasureManager() {
   const [transactionType, setTransactionType] = useState("add"); // 'add' or 'deduct'
 
   // Function to re-fetch all treasure data
-  const refreshTreasureData = async () => {
+  const refreshTreasureData = useCallback(async () => {
     if (!currentRoom || !user || !user.token) return;
 
     setLoading(true);
@@ -43,12 +43,12 @@ function TreasureManager() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentRoom, user]);
 
   // Fetch treasure data on component mount or when currentRoom changes
   useEffect(() => {
     refreshTreasureData();
-  }, [currentRoom, user]);
+  }, [refreshTreasureData]);
 
   // Determine if the current user is an admin in this room
   const userIsAdminInRoom = currentRoom?.members.some(
@@ -147,14 +147,6 @@ function TreasureManager() {
     return (
       <div className="text-center py-4 text-gray-600">
         Loading treasure data...
-      </div>
-    );
-  }
-
-  if (error && !message) {
-    return (
-      <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative my-4">
-        {error}
       </div>
     );
   }

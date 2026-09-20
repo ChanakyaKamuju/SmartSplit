@@ -1,8 +1,8 @@
 // frontend/src/services/treasureService.js
 import axios from "axios";
+import { resourceUrl } from "./apiConfig";
 
-const API_URL = "http://localhost:5000/api/treasure/"; // Ensure this matches your backend port
-// const API_URL = "http://10.209.140.157:5000/api/treasure/"; // Ensure this matches your backend port
+const API_URL = resourceUrl("treasure");
 
 // Helper to get auth header
 const getAuthHeader = (token) => ({
@@ -86,11 +86,30 @@ const getTreasureTransactions = async (roomId, token) => {
   }
 };
 
+// Delete a treasure transaction and revert its effect on the balance
+// (room admin, or the member who recorded it)
+const deleteTreasureTransaction = async (transactionId, token) => {
+  try {
+    const response = await axios.delete(
+      API_URL + `transaction/${transactionId}`,
+      getAuthHeader(token),
+    );
+    return response.data;
+  } catch (error) {
+    const message =
+      (error.response && error.response.data && error.response.data.message) ||
+      error.message ||
+      error.toString();
+    throw new Error(message);
+  }
+};
+
 const treasureService = {
   addTreasureAmount,
   recordTreasureTransaction,
   getCurrentTreasure,
   getTreasureTransactions,
+  deleteTreasureTransaction,
 };
 
 export default treasureService;

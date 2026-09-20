@@ -15,13 +15,18 @@ const treasureTransactionSchema = new mongoose.Schema(
       enum: ["credit", "debit"], // 'credit' for adding to treasure, 'debit' for spending from treasure
       required: true,
     },
+    // Who recorded this transaction
+    performedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
     date: {
       type: Date,
       default: Date.now,
     },
   },
   {
-    _id: false, // Do not create a default _id for subdocuments if not needed
+    _id: true, // Needed so individual transactions can be referenced and deleted
   }
 );
 
@@ -37,6 +42,10 @@ const roomSchema = new mongoose.Schema(
       required: true,
       unique: true,
       trim: true,
+    },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
     },
     members: [
       {

@@ -1,8 +1,7 @@
 import axios from "axios";
+import { resourceUrl } from "./apiConfig";
 
-const API_URL = "http://localhost:5000/api/duties/"; // Ensure this matches your backend port
-// const API_URL = "http://192.168.1.11:5000/api/duties/"; // Ensure this matches your backend port
-// const API_URL = "http://10.209.140.157:5000/api/duties/"; // Ensure this matches your backend port
+const API_URL = resourceUrl("duties");
 
 // Helper to get auth header
 const getAuthHeader = (token) => ({
@@ -46,12 +45,12 @@ const getDutiesTable = async (roomId, token) => {
   }
 };
 
-// Skip a member from the current duty cycle (Admin only)
-const skipMemberFromCycle = async (roomId, userIdToSkip, token) => {
+// Skip one or more members from the current duty cycle (Admin only)
+const skipMemberFromCycle = async (roomId, membersToSkip, token) => {
   try {
     const response = await axios.put(
       API_URL + `${roomId}/skip-member`,
-      { userIdToSkip },
+      { membersToSkip },
       getAuthHeader(token),
     );
     return response.data; // Backend returns updated duty table after skip

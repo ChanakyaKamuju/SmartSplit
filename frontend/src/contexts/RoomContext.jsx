@@ -1,5 +1,11 @@
 // frontend/src/contexts/RoomContext.js
-import React, { createContext, useState, useEffect } from "react"; // Removed useContext from here
+import React, {
+  createContext,
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+} from "react"; // Removed useContext from here
 import roomService from "../services/roomService";
 import { useAuth } from "./AuthContext"; // To get the user's token
 
@@ -14,6 +20,39 @@ export const RoomProvider = ({ children }) => {
   const [loadingRooms, setLoadingRooms] = useState(true);
   const [error, setError] = useState(null);
 
+  // Tracks whether the room persisted in localStorage has already been
+  // restored for this session, so the effect below doesn't have to depend on
+  // currentRoom (which it sets, causing an endless refetch loop).
+  const restoredStoredRoom = useRef(false);
+
+  // Function to select a room and load its full details
+  const selectRoom = useCallback(
+    async (roomId) => {
+      if (!isAuthenticated || !user || !user.token) {
+        setError("Not authenticated to select a room.");
+        return;
+      }
+      setLoadingRooms(true); // Indicate loading for room details
+      setError(null);
+      try {
+        const roomDetails = await roomService.getRoomDetails(
+          roomId,
+          user.token
+        );
+        setCurrentRoom(roomDetails);
+        localStorage.setItem("currentRoomId", roomId); // Persist current room selection
+      } catch (err) {
+        console.error("Failed to load room details:", err);
+        setError(err.message || "Failed to load room details");
+        setCurrentRoom(null);
+        localStorage.removeItem("currentRoomId");
+      } finally {
+        setLoadingRooms(false);
+      }
+    },
+    [isAuthenticated, user]
+  );
+
   // Load user's rooms when authenticated user changes
   useEffect(() => {
     const fetchMyRooms = async () => {
@@ -26,7 +65,8 @@ export const RoomProvider = ({ children }) => {
           // If a currentRoom was previously selected (e.g., from local storage or previous session),
           // try to re-select it if it's still in the user's rooms.
           const storedRoomId = localStorage.getItem("currentRoomId");
-          if (storedRoomId && !currentRoom) {
+          if (storedRoomId && !restoredStoredRoom.current) {
+            restoredStoredRoom.current = true;
             const foundRoom = rooms.find((r) => r._id === storedRoomId);
             if (foundRoom) {
               await selectRoom(foundRoom._id); // Re-select to load full details
@@ -34,12 +74,6 @@ export const RoomProvider = ({ children }) => {
               localStorage.removeItem("currentRoomId");
               setCurrentRoom(null);
             }
-          } else if (!storedRoomId && currentRoom) {
-            // If currentRoom is set in context but not in localStorage, clear it
-            setCurrentRoom(null);
-          } else if (!storedRoomId && !currentRoom) {
-            // No stored room and no current room, ensure it's null
-            setCurrentRoom(null);
           }
         } catch (err) {
           console.error("Failed to fetch user's rooms:", err);
@@ -55,33 +89,12 @@ export const RoomProvider = ({ children }) => {
         setMyRooms([]);
         setCurrentRoom(null);
         setLoadingRooms(false);
+        restoredStoredRoom.current = false;
         localStorage.removeItem("currentRoomId");
       }
     };
     fetchMyRooms();
-  }, [isAuthenticated, user, authLoading, currentRoom]); // Re-run when auth state changes
-
-  // Function to select a room and load its full details
-  const selectRoom = async (roomId) => {
-    if (!isAuthenticated || !user || !user.token) {
-      setError("Not authenticated to select a room.");
-      return;
-    }
-    setLoadingRooms(true); // Indicate loading for room details
-    setError(null);
-    try {
-      const roomDetails = await roomService.getRoomDetails(roomId, user.token);
-      setCurrentRoom(roomDetails);
-      localStorage.setItem("currentRoomId", roomId); // Persist current room selection
-    } catch (err) {
-      console.error("Failed to load room details:", err);
-      setError(err.message || "Failed to load room details");
-      setCurrentRoom(null);
-      localStorage.removeItem("currentRoomId");
-    } finally {
-      setLoadingRooms(false);
-    }
-  };
+  }, [isAuthenticated, user, authLoading, selectRoom]); // Re-run when auth state changes
 
   // Function to clear current room selection
   const clearCurrentRoom = () => {

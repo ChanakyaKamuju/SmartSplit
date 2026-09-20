@@ -1,10 +1,9 @@
 // frontend/src/services/authService.js
 import axios from "axios";
+import { resourceUrl } from "./apiConfig";
 
-// Base URL for your backend API
-const API_URL = "http://localhost:5000/api/users/"; // Ensure this matches your backend port
-// const API_URL = "http://192.168.1.11:5000/api/users/"; // Ensure this matches your backend port
-// const API_URL = "http://10.209.140.157:5000/api/users/"; // Ensure this matches your backend port
+// Base URL for your backend API (configure via VITE_APP_API_URL)
+const API_URL = resourceUrl("users");
 
 // Register user
 const register = async (name, email, password) => {

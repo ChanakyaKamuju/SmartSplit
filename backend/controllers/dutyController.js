@@ -3,6 +3,7 @@ const asyncHandler = require("express-async-handler");
 const Duty = require("../models/Duty");
 const Room = require("../models/Room");
 const User = require("../models/User"); // For populating user details
+const { resolveAssignments } = require("../utils/dutyAssignment");
 
 // Helper function to check if two dates are the same day (ignoring time)
 const isSameDay = (d1, d2) => {
@@ -55,16 +56,12 @@ const createOrUpdateDuties = asyncHandler(async (req, res) => {
       "One or more member IDs in the order are not valid room members."
     );
   }
-  let memberIndex = 0;
-  const dutyDocs = duties.map((duty) => {
-    const doc = {
-      description: duty.description,
-      assignedTo: memberOrder[memberIndex] || null, // Assign to each member in order
-      // Note: assignedTo will be updated later based on rotation logic
-    };
-    memberIndex++;
-    return doc;
-  });
+  // Fresh configuration starts the rotation at the first member with no skips
+  const assignments = resolveAssignments(duties, memberOrder, 0, []);
+  const dutyDocs = duties.map((duty, index) => ({
+    description: duty.description,
+    assignedTo: assignments[index],
+  }));
 
   // Find existing duty configuration or create a new one
   let dutyConfig = await Duty.findOne({ roomId });
@@ -143,6 +140,11 @@ const getDutiesTable = asyncHandler(async (req, res) => {
     message: "Duties retrieved successfully.",
     currentUserDuty: currentUserDuty || null, // If user has no duty today or is skipped
     allDuties: dutyConfig.duties, // Full list of duties configured
+    // The rotation order is what the client needs to render and re-submit the
+    // configuration; it cannot be derived from `duties` alone because there are
+    // usually fewer duties than members.
+    memberOrder: dutyConfig.memberOrder,
+    skippedMembersForCurrentCycle: dutyConfig.skippedMembersForCurrentCycle,
     isConfigured: true,
   });
 
@@ -185,8 +187,8 @@ const getDutiesTable = asyncHandler(async (req, res) => {
   // Also include the current user's duty for easy display
 });
 
-// @desc    Skip a member from the current duty cycle (Admin only)
-// @route   PUT /api/duties/:roomId/skip-member
+// @desc    Skip one or more members from the current duty cycle (Admin only)
+// @route   PUT /api/duties/:id/skip-member
 // @access  Private/Admin
 const skipMemberFromCycle = asyncHandler(async (req, res) => {
   const roomId = req.params.id;
@@ -202,33 +204,79 @@ const skipMemberFromCycle = asyncHandler(async (req, res) => {
     throw new Error("Please provide at least one user to skip.");
   }
 
-  let dutyConfig = await Duty.findOne({ roomId });
+  const dutyConfig = await Duty.findOne({ roomId });
   if (!dutyConfig) {
     res.status(404);
     throw new Error("Duty configuration not found for this room.");
   }
 
-  // Check if the user to skip is actually in the memberOrder
-  const isMemberInOrder = dutyConfig.memberOrder.some(
-    (memberId) => memberId.toString() === userIdToSkip
+  const orderIds = dutyConfig.memberOrder.map((memberId) =>
+    memberId.toString()
   );
-  if (!isMemberInOrder) {
-    res.status(400);
-    throw new Error("User to skip is not part of the duty member order.");
+  const alreadySkipped = dutyConfig.skippedMembersForCurrentCycle.map((id) =>
+    id.toString()
+  );
+
+  for (const userId of membersToSkip) {
+    // Check if the user to skip is actually in the memberOrder
+    if (!orderIds.includes(userId.toString())) {
+      res.status(400);
+      throw new Error("User to skip is not part of the duty member order.");
+    }
+    // Check if already skipped for current cycle
+    if (alreadySkipped.includes(userId.toString())) {
+      res.status(400);
+      throw new Error("This member is already skipped for the current cycle.");
+    }
   }
 
-  // Check if already skipped for current cycle
-  if (dutyConfig.skippedMembersForCurrentCycle.includes(userIdToSkip)) {
+  // Skipping everyone would leave every duty unassigned
+  const remaining = orderIds.filter(
+    (id) =>
+      !alreadySkipped.includes(id) &&
+      !membersToSkip.map((m) => m.toString()).includes(id)
+  );
+  if (remaining.length === 0) {
     res.status(400);
-    throw new Error("This member is already skipped for the current cycle.");
+    throw new Error(
+      "Cannot skip every member: at least one member must remain to take a duty."
+    );
   }
 
-  // Add member to skipped list for current cycle
-  dutyConfig.skippedMembersForCurrentCycle.push(userIdToSkip);
+  // Add members to the skipped list for the current cycle
+  dutyConfig.skippedMembersForCurrentCycle.push(...membersToSkip);
+
+  // Re-assign today's duties around the skipped members
+  const assignments = resolveAssignments(
+    dutyConfig.duties,
+    dutyConfig.memberOrder,
+    dutyConfig.currentStartingMemberIndex,
+    dutyConfig.skippedMembersForCurrentCycle
+  );
+  dutyConfig.duties.forEach((duty, index) => {
+    duty.assignedTo = assignments[index];
+  });
+
   await dutyConfig.save();
 
+  // Return the same shape as getDutiesTable so the client can apply it directly
+  const updated = await Duty.findOne({ roomId })
+    .populate("memberOrder", "name")
+    .populate("duties.assignedTo", "name");
+
+  const currentUserDuty = updated.duties.find(
+    (duty) =>
+      duty.assignedTo &&
+      duty.assignedTo._id.toString() === req.user._id.toString()
+  );
+
   res.status(200).json({
-    message: `Member ${userIdToSkip} skipped for the current duty cycle.`,
+    message: "Member(s) skipped for the current duty cycle.",
+    currentUserDuty: currentUserDuty || null,
+    allDuties: updated.duties,
+    memberOrder: updated.memberOrder,
+    skippedMembersForCurrentCycle: updated.skippedMembersForCurrentCycle,
+    isConfigured: true,
   });
 });
 

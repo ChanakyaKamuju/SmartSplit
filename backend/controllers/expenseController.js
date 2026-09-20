@@ -355,8 +355,11 @@ const getRoomBalances = asyncHandler(async (req, res) => {
     const amountToSettle = Math.min(Math.abs(debtor.amount), creditor.amount);
 
     if (amountToSettle > 0.01) {
-      // Only add settlement if amount is significant
+      // Only add settlement if amount is significant. Ids are included because
+      // names are not unique and the client needs to resolve the users.
       simplifiedDebts.push({
+        fromId: debtor._id,
+        toId: creditor._id,
         from: debtor.name,
         to: creditor.name,
         amount: parseFloat(amountToSettle.toFixed(2)), // Format to 2 decimal places

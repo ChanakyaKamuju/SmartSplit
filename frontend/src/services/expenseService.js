@@ -1,8 +1,8 @@
 // frontend/src/services/expenseService.js
 import axios from "axios";
+import { resourceUrl } from "./apiConfig";
 
-const API_URL = "http://localhost:5000/api/expenses/"; // Ensure this matches your backend port
-// const API_URL = "http://10.209.140.157:5000/api/expenses/"; // Ensure this matches your backend port
+const API_URL = resourceUrl("expenses");
 
 // Helper to get auth header
 const getAuthHeader = (token) => ({

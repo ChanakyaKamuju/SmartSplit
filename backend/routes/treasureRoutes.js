@@ -6,6 +6,7 @@ const {
   recordTreasureTransaction,
   getCurrentTreasure,
   getTreasureTransactions,
+  deleteTreasureTransaction,
 } = require("../controllers/treasureController");
 const { protect, adminProtect } = require("../middleware/authMiddleware");
 
@@ -18,6 +19,10 @@ router.post(
   adminProtect,
   recordTreasureTransaction
 );
+
+// Deleting a transaction is authorized inside the controller (room admin or the
+// member who recorded it), so adminProtect is deliberately not used here.
+router.delete("/transaction/:transactionId", protect, deleteTreasureTransaction);
 
 // View-only actions (accessible by any room member):
 router.get("/:roomId", protect, getCurrentTreasure);

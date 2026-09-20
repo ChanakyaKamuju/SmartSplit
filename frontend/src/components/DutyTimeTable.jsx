@@ -1,12 +1,12 @@
 // frontend/src/components/DutyTimeTable.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import dutyService from "../services/dutyService";
 import { useAuth } from "../contexts/AuthContext"; // To get the user's token
 import { useRoom } from "../hooks/useRoomData"; // To get current room details and its members
 
 function DutyTimeTable() {
   const { user } = useAuth();
-  const { currentRoom, loadingRooms, error: roomError } = useRoom();
+  const { currentRoom, loadingRooms } = useRoom();
 
   const [dutiesConfig, setDutiesConfig] = useState(null); // Stores the full duty configuration
   const [loading, setLoading] = useState(true);
@@ -19,19 +19,18 @@ function DutyTimeTable() {
   const [memberOrderList, setMemberOrderList] = useState([]); // List of member IDs for order
   const [showConfigForm, setShowConfigForm] = useState(false); // Toggle config form visibility
 
-  // Fetch duties on component mount or when currentRoom changes
-  useEffect(() => {
-    const fetchDuties = async () => {
+  // Load the duty table and seed the configuration form from it
+  const fetchDuties = useCallback(
+    async ({ showSpinner = true } = {}) => {
       if (!currentRoom || !user || !user.token) return;
 
-      setLoading(true);
+      if (showSpinner) setLoading(true);
       setError(null);
       try {
         const data = await dutyService.getDutiesTable(
           currentRoom._id,
           user.token
         );
-        console.log("Fetched duties data:", data);
 
         setDutiesConfig(data);
         // Initialize form states if duties are configured
@@ -42,23 +41,31 @@ function DutyTimeTable() {
               _id: d._id,
             }))
           );
-          setMemberOrderList(data.allDuties.map((d) => d.assignedTo._id));
+          // Use the saved rotation order. It cannot be rebuilt from allDuties:
+          // there are usually fewer duties than members, so doing that would
+          // silently drop members from the rotation.
+          setMemberOrderList(
+            (data.memberOrder || []).map((m) => m._id || m).filter(Boolean)
+          );
         } else {
           // If not configured, initialize with room members for potential configuration
           setMemberOrderList(currentRoom.members.map((m) => m.user._id));
-          console.log(memberOrderList);
         }
       } catch (err) {
         console.error("Failed to fetch duties:", err);
         setError(err.message || "Failed to load duties.");
         setDutiesConfig(null);
       } finally {
-        setLoading(false);
+        if (showSpinner) setLoading(false);
       }
-    };
+    },
+    [currentRoom, user]
+  );
 
+  // Fetch duties on component mount or when currentRoom changes
+  useEffect(() => {
     fetchDuties();
-  }, [currentRoom, user]);
+  }, [fetchDuties]);
 
   // Determine if the current user is an admin in this room
   const userIsAdminInRoom = currentRoom?.members.some(
@@ -89,7 +96,7 @@ function DutyTimeTable() {
       setNewDutyDescription("");
     } else if (dutiesList.length >= memberOrderList.length) {
       setError(
-        "Number of duties cannot be greater than or equal to the number of members in the order."
+        "Number of duties cannot be greater than the number of members in the order."
       );
     }
   };
@@ -104,12 +111,6 @@ function DutyTimeTable() {
         duty._id === id ? { ...duty, description: newDesc } : duty
       )
     );
-  };
-
-  const handleMemberOrderChange = (e, index) => {
-    const newOrder = [...memberOrderList];
-    newOrder[index] = e.target.value;
-    setMemberOrderList(newOrder);
   };
 
   const handleMoveMemberUp = (index) => {
@@ -152,13 +153,16 @@ function DutyTimeTable() {
     const finalDuties = dutiesList.map((d) => ({ description: d.description }));
 
     try {
-      const response = await dutyService.createOrUpdateDuties(
+      await dutyService.createOrUpdateDuties(
         currentRoom._id,
         finalDuties,
         memberOrderList,
         user.token
       );
-      setDutiesConfig(response.dutyConfig); // Update local state with saved config
+      // Re-fetch instead of storing the save response: the configure endpoint
+      // returns the raw Duty document, not the { allDuties, memberOrder,
+      // isConfigured } shape this component renders.
+      await fetchDuties({ showSpinner: false });
       setMessage("Duty configuration saved successfully!");
       setShowConfigForm(false); // Hide form after saving
     } catch (err) {
@@ -181,10 +185,10 @@ function DutyTimeTable() {
     try {
       const response = await dutyService.skipMemberFromCycle(
         currentRoom._id,
-        userIdToSkip,
+        [userIdToSkip],
         user.token
       );
-      setDutiesConfig(response.updatedDutyTable); // Update with new assignments after skip
+      setDutiesConfig(response); // Update with new assignments after skip
       setMessage(`Member skipped successfully! Duties re-assigned.`);
     } catch (err) {
       setError(err.message || "Failed to skip member.");
@@ -257,19 +261,22 @@ function DutyTimeTable() {
           <ul className="space-y-2">
             {dutiesConfig.allDuties.map((assignment, index) => (
               <li
-                key={index}
+                key={assignment._id || index}
                 className="flex justify-between items-center bg-gray-50 p-3 rounded-md border border-gray-200"
               >
                 <span className="text-gray-700 font-medium">
                   {assignment.description}
                 </span>
+                {/* assignedTo is null when a duty is unassigned (e.g. every
+                    eligible member was skipped) */}
                 <span className="text-indigo-600 font-semibold">
-                  {assignment.assignedTo.name}
-                  {assignment.assignedTo._id === user._id && (
+                  {assignment.assignedTo?.name || "Unassigned"}
+                  {assignment.assignedTo?._id === user._id && (
                     <span className="ml-2 text-sm text-gray-500">(You)</span>
                   )}
                 </span>
                 {userIsAdminInRoom &&
+                  assignment.assignedTo &&
                   assignment.assignedTo._id !== user._id && (
                     <button
                       onClick={() =>
