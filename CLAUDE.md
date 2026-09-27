@@ -5,9 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Overview
 
 SmartSplitAI is a MERN app for shared-living groups ("rooms"): split expenses, manage a shared
-treasure fund, and rotate recurring duties. The repo holds two independent npm projects —
-`backend/` (Express + MongoDB) and `frontend/` (React 19 + Vite + Tailwind 4) — with no root
-package.json or workspace config. Install and run each separately.
+treasure fund, and rotate recurring duties. The repo holds three independent projects with no
+root package.json or workspace config — install and run each separately:
+
+- `backend/` — Express 5 + MongoDB (CommonJS)
+- `frontend/` — React 19 + Vite + Tailwind 4 (ESM)
+- `smartsplit-agent/` — Python: an MCP server wrapping the REST API, plus an OpenAI agent
 
 ## Commands
 
@@ -26,6 +29,15 @@ npm install
 npm run dev     # vite, port 5173, server.host = true (exposed on LAN)
 npm run build
 npm run lint    # eslint . — the only automated check in the repo
+```
+
+Agent / MCP server (`cd smartsplit-agent`) — Windows venv paths shown:
+
+```bash
+./.venv/Scripts/python.exe -m smartsplit_mcp.server      # MCP server over stdio
+./.venv/Scripts/python.exe agent.py "who owes whom?"     # autonomous agent
+./.venv/Scripts/python.exe scripts/list_models.py        # models your OPENAI_API_KEY can use
+./.venv/Scripts/python.exe scripts/snapshot_db.py        # JSON backup before destructive tests
 ```
 
 There are no tests. `backend`'s `npm test` is the default placeholder and exits 1 — do not treat
@@ -150,6 +162,37 @@ function in `useCallback([currentRoom, user])` and depend on that in `useEffect`
 listing `[currentRoom, user]` on the effect while the callback is unmemoized reintroduces stale
 closures.
 
+### MCP server + agent (`smartsplit-agent/`)
+
+A **semantic** wrapper over the REST API, not a 1:1 mirror. The API is id-driven (`paidBy`,
+`splits[].user`, `userId`, `memberOrder` all take ObjectIds) and a model handed those invents
+them, so tools accept **names, emails, or "me"** and `smartsplit_mcp/resolve.py` maps them
+against the active room's cached member list — raising with the candidate list on ambiguity
+rather than guessing.
+
+Layering: `tools/*.py` (one `register(mcp)` per group) → `resolve.py` / `format.py` →
+`api.py` → the Express API over HTTP. It never touches MongoDB directly, so all business rules
+stay in the backend.
+
+Invariants worth preserving:
+
+- **`mcp` is 2.x**, where `FastMCP` was renamed `MCPServer` (`mcp.server.mcpserver`) and model
+  fields are snake_case (`input_schema`, `ToolAnnotations(read_only_hint=...)`). Most examples
+  online are 1.x and will not run.
+- `SmartSplitError` subclasses MCP's `ToolError`, so a failure reaches the model as the API's own
+  message instead of an "unexpected error" wrapper.
+- The auth token lives in `session.py` and is **never returned from a tool**. Setting
+  `SMARTSPLIT_EMAIL`/`SMARTSPLIT_PASSWORD` makes the server log in lazily by itself, keeping the
+  password out of the model's context entirely.
+- Split arithmetic is computed and validated in `tools/expenses.py` before the HTTP call — the
+  model never does float maths the backend would reject.
+- `settle_debt` has no REST endpoint; it writes the synthetic `unequal` expense, mirroring
+  `expenseService.settleDebt()`, and reads the exact figure from `/balances`.
+- Destructive tools are gated three ways: absent unless `SMARTSPLIT_ALLOW_DESTRUCTIVE=true`,
+  then require `confirm=True` **in the server** (so Claude Desktop/Cursor are protected too),
+  then `require_approval` in `agent.py`. The API has no soft delete.
+- The model id is never hardcoded — `OPENAI_MODEL` comes from `.env`.
+
 ## Known gaps
 
 - `User.rooms[]` is never written to by any controller (membership is derived from
@@ -158,10 +201,11 @@ closures.
 
 ## Verifying changes
 
-There is no test runner, so verification is manual. `backend/.env` currently points at a
-MongoDB Atlas cluster whose hostname no longer resolves, so the server cannot boot against it as
-configured. To exercise the API locally, run a throwaway MongoDB and override the env inline —
-never edit `.env` for a test:
+There is no test runner, so verification is manual. `backend/.env` points at a live MongoDB Atlas
+database (`Splitstore`) holding **real data** — and this API has no soft delete. Never run
+destructive tests against it. Either scope tests to throwaway records you create and then remove
+(e.g. `@agent-test.local` accounts in their own room), or override the env inline to point at a
+disposable database — never edit `.env` for a test:
 
 ```bash
 MONGO_URI="mongodb://127.0.0.1:27018/smoketest" JWT_SECRET="test" PORT=5001 node server.js

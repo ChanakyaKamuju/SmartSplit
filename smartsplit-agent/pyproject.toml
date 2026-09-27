@@ -1,0 +1,22 @@
+[project]
+name = "smartsplit-agent"
+version = "0.1.0"
+description = "MCP server exposing the SmartSplitAI REST API, plus an autonomous OpenAI agent that drives it"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.19.0,<3",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "openai-agents>=0.1",
+    "pymongo[srv]>=4.6",
+]
+
+[project.scripts]
+smartsplit-mcp = "smartsplit_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["smartsplit_mcp", "smartsplit_mcp.tools"]
